@@ -1,0 +1,35 @@
+name: Build RELINK AI Timing Align VST3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout JUCE
+        uses: actions/checkout@v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 8.0.10
+          path: JUCE
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build VST3
+        shell: pwsh
+        run: cmake --build build --config Release --target RELINKAITimingAlign_VST3 --parallel 4
+
+      - name: Upload VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: RELINK_AI_Timing_Align_VST3_Windows
+          path: build/RELINKAITimingAlign_artefacts/Release/VST3/*.vst3/
+          if-no-files-found: error
