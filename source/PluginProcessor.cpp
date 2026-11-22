@@ -2,7 +2,7 @@
 #include "PluginEditor.h"
 #include <cmath>
 
-static constexpr int maxDelayMilliseconds = 100;
+static constexpr int maxDelayMilliseconds = 40; // delay only; no lookahead
 
 juce::AudioProcessorValueTreeState::ParameterLayout RELINKAITimingAlignAudioProcessor::createParams()
 {
@@ -41,15 +41,15 @@ bool RELINKAITimingAlignAudioProcessor::isBusesLayoutSupported(const BusesLayout
 void RELINKAITimingAlignAudioProcessor::prepareToPlay(double sampleRate, int)
 {
     sr = sampleRate > 0 ? sampleRate : 44100.0;
-    baseSamples = juce::roundToInt(sr * maxDelayMilliseconds / 1000.0);
-    ringSize = baseSamples * 2 + 16;
+    baseSamples = 0; // Report and apply ZERO plugin latency.
+    ringSize = juce::roundToInt(sr * maxDelayMilliseconds / 1000.0) + 32;
     for (auto& ch : ring) ch.assign(static_cast<size_t>(ringSize), 0.0f);
-    writePos = 0; counter = 0; currentDelay = static_cast<float>(baseSamples);
+    writePos = 0; counter = 0; currentDelay = 0.0f;
     targetDetector = {}; referenceDetector = {};
     lastRefHit = lastTargetHit = usedRefHit = usedTargetHit = -100000000;
     trackedOffsetSamples = 0; stablePairs = 0;
     observedOffsetMs.store(0); confidence.store(0);
-    setLatencySamples(baseSamples);
+    setLatencySamples(0);
 }
 
 int64_t RELINKAITimingAlignAudioProcessor::Detector::detect(float amplitude, int64_t sample, float alpha, int64_t cooldown, float threshold)
@@ -111,29 +111,37 @@ void RELINKAITimingAlignAudioProcessor::processBlock(juce::AudioBuffer<float>& b
             }
         }
 
-        // A constant reported latency allows positive AND negative shifts with lookahead.
-        // A negative detected offset means the target is early and must be delayed.
-        const float offset = automatic && stablePairs >= 2 ? trackedOffsetSamples : manual;
+        // Safe mode: no anticipatory shifts. A zero offset is a true, sample-exact
+        // passthrough, without relying on the Cubase host latency compensation.
+        // Negative offset = early target -> positive delay. Positive offset = late
+        // target -> would require lookahead; do not attempt it in zero-latency mode.
+        const float offset = automatic ? (stablePairs >= 2 ? trackedOffsetSamples : 0.0f) : manual;
         const float amount = strength * (mode == 0 ? 1.0f : (mode == 1 ? 0.7f : 0.5f));
         const float desiredDiff = (mode == 2 ? groove : 0.0f);
-        const float correctedShift = (offset - desiredDiff) * amount;
-        const float wanted = juce::jlimit(1.0f, static_cast<float>(ringSize - 3), static_cast<float>(baseSamples) - correctedShift);
-        // Smooth the delay change to avoid hard jumps/clicks.
-        currentDelay += (wanted - currentDelay) * (1.0f - std::exp(-1.0f / static_cast<float>(0.03 * sr)));
+        const float correction = (offset - desiredDiff) * amount;
+        const float wantedDelay = juce::jlimit(0.0f, static_cast<float>(ringSize - 3), -correction);
+        // Smoothing prevents zipper noise when the estimated timing changes.
+        const float smoothing = 1.0f - std::exp(-1.0f / static_cast<float>(0.03 * sr));
+        currentDelay += (wantedDelay - currentDelay) * smoothing;
+        if (wantedDelay == 0.0f && currentDelay < 0.00001f)
+            currentDelay = 0.0f;
         for (int c = 0; c < channels; ++c)
         {
             float* audio = main.getWritePointer(c);
             const float input = audio[i];
             ring[static_cast<size_t>(c)][static_cast<size_t>(writePos)] = input;
-            const float pos = static_cast<float>(writePos) - currentDelay + static_cast<float>(ringSize);
-            const int a = static_cast<int>(std::floor(pos)) % ringSize;
-            const int b = (a + 1) % ringSize;
-            const float frac = pos - std::floor(pos);
-            const float shifted = ring[static_cast<size_t>(c)][static_cast<size_t>(a)] * (1 - frac)
-                                + ring[static_cast<size_t>(c)][static_cast<size_t>(b)] * frac;
-            const int unshiftedIndex = (writePos - baseSamples + ringSize) % ringSize;
-            const float unshifted = ring[static_cast<size_t>(c)][static_cast<size_t>(unshiftedIndex)];
-            audio[i] = shifted * wet + unshifted * (1.0f - wet);
+            float shifted = input;
+            if (currentDelay > 0.00001f)
+            {
+                float readPos = static_cast<float>(writePos) - currentDelay;
+                if (readPos < 0.0f) readPos += static_cast<float>(ringSize);
+                const int a = static_cast<int>(std::floor(readPos));
+                const int b = (a + 1) % ringSize;
+                const float frac = readPos - static_cast<float>(a);
+                shifted = ring[static_cast<size_t>(c)][static_cast<size_t>(a)] * (1.0f - frac)
+                        + ring[static_cast<size_t>(c)][static_cast<size_t>(b)] * frac;
+            }
+            audio[i] = shifted * wet + input * (1.0f - wet);
         }
         writePos = (writePos + 1) % ringSize;
         ++counter;

@@ -77,7 +77,7 @@ void RELINKAITimingAlignAudioProcessorEditor::paint(juce::Graphics& g)
     g.drawText("DETECTED OFFSET", 36, 92, 220, 19, juce::Justification::centredLeft);
     g.drawText("CONFIDENCE", 290, 92, 175, 19, juce::Justification::centredLeft);
     g.setColour(juce::Colour(muted));
-    g.drawText("Insert on target track  |  Route kick to sidechain  |  v0.2 prototype", 22, 359, 615, 22,
+    g.drawText("Insert on target track  |  Route kick to sidechain  |  v0.2.1 SAFE / ZERO LATENCY", 22, 359, 615, 22,
                juce::Justification::centredLeft);
 }
 
